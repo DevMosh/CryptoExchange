@@ -1,0 +1,14 @@
+services:
+  telegram-bot:
+    # Собираем образ из текущей папки
+    build: .
+    # Имя контейнера для удобства
+    container_name: my_aiogram_bot
+    # Если бот упадет (ошибка), Docker сам его перезапустит
+    restart: always
+    # Пробрасываем файл с переменными окружения (токен)
+    env_file:
+      - .env
+    volumes:
+      # Мы связываем папку data на компьютере с папкой data внутри контейнера
+      - ./database:/app/database

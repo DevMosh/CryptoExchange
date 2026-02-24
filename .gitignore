@@ -214,3 +214,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# =========================
+# Custom Project Additions
+# =========================
+
+# SQLite Database files
+*.db
+*.db-shm
+*.db-wal
+
+# На всякий случай укажем точные пути из твоей структуры
+database/database.db
+database/database.db-shm
+database/database.db-wal
+
+# Configuration with sensitive data (Tokens, Passwords)
+# ВНИМАНИЕ: Если в data/config.py лежит токен бота, раскомментируй строку ниже!
+# data/config.py
