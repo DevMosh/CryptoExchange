@@ -38,6 +38,8 @@ class Order(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('users.user_id'))
 
+    order_type: Mapped[str] = mapped_column(String(10), nullable=False, default="buy")
+
     # --- Финансы ---
     amount_rub: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     # Точность до 6 знаков [cite: 273]

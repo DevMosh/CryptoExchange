@@ -22,3 +22,9 @@ client = ResendEmailClient(
 dexpay = DexpayClient(
     api_token=os.getenv('DEXPAY_API_TOKEN'),
 )
+
+
+privacy = 'https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-02-21-89'
+terms = 'https://telegra.ph/PUBLICHNAYA-OFERTA-02-21-7'  # оферта
+
+support_link = 'khsv500'

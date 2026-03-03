@@ -6,7 +6,7 @@ def start_keyboard():
     builder = ReplyKeyboardBuilder()
 
     builder.row(
-        types.KeyboardButton(text="Обмен 💱"),
+        types.KeyboardButton(text="Операции 💱"),
     )
     builder.row(
         types.KeyboardButton(text="История 🗄"),

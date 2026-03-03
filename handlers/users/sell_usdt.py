@@ -115,7 +115,7 @@ async def process_instant_buy_from_inline(message: types.Message, state: FSMCont
 
     # 3. Проверка лимита
     if usdt < 40.0:
-        msg = await message.answer("⚠️ Сумма обмена должна быть не менее 40$")
+        msg = await message.answer("⚠️ Сумма операции должна быть не менее 40$")
         await asyncio.sleep(3)
         try:
             await msg.delete()

@@ -3,19 +3,19 @@ import hashlib
 import random
 from decimal import Decimal
 
-from aiogram import Router, F
+from aiogram import Router, F, types
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, ReplyKeyboardRemove, CallbackQuery
 from sqlalchemy import select
 
-from data.config import client, dexpay
+from data.config import client, dexpay, terms, privacy, support_link
 from database.connect import async_session
 from database.models import User
 from database.requests.add import add_user
-from database.requests.get import get_user, check_email_exists
-from keyboards.inline import get_buy_sell_keyboard, get_cancel_keyboard
+from database.requests.get import get_user, check_email_exists, get_user_orders
+from keyboards.inline import get_buy_sell_keyboard, get_cancel_keyboard, history_type_keyboard
 from keyboards.reply import start_keyboard
 from utils.usdt_rub_price import get_exchange_rates
 from aiogram import Router, F
@@ -63,7 +63,9 @@ async def start(message: Message, state: FSMContext):
         )
         await message.answer(
             f"<b>Добро пожаловать в EscoEX!</b>\n\n"
-            f"Для завершения регистрации, пожалуйста, введите ваш <b>Email</b>:\n", reply_markup=get_cancel_keyboard()
+            f"Отправляя свой Email, вы подтверждаете согласие с нашей <a href='{privacy}'>Политикой конфиденциальности</a> и <a href='{terms}'>Пользовательским соглашением</a>.\n\n"
+            f"Для завершения регистрации, пожалуйста, введите ваш <b>Email</b>:",
+            reply_markup=get_cancel_keyboard(), disable_web_page_preview=True
         )
         # Ждем ввод почты
         await state.set_state(Registration.waiting_for_email)
@@ -141,22 +143,59 @@ async def process_code(message: Message, state: FSMContext):
 
     # Сравниваем
     if user_code == correct_code:
-        # --- УСПЕХ: Только сейчас записываем в БД ---
+        msg = await message.answer("⏳ Проверяем данные и создаем аккаунт...")
+
+        dexpay_id = None
+
+        try:
+            # 1. Проверяем, существует ли пользователь в Dexpay
+            all_users = await dexpay.get_all_users()
+            # Обрабатываем структуру ответа API Dexpay (список или словарь)
+            users_list = all_users.get("data", []) if isinstance(all_users, dict) else all_users
+
+            for d_user in users_list:
+                if d_user.get("email") == email:
+                    dexpay_id = d_user.get("id")
+                    break
+
+            # 2. Если пользователя нет, регистрируем его
+            if not dexpay_id:
+                dexpay_id = await dexpay.register_user(
+                    email=email,
+                    customer_id=str(message.from_user.id)
+                )
+
+        except Exception as e:
+            await msg.edit_text(
+                "❌ <b>Ошибка при связи с платежным шлюзом.</b>\n\n"
+                "Пожалуйста, попробуйте позже или обратитесь в поддержку."
+            )
+            print(f"Dexpay Error: {e}")
+            return
+
+        # 3. Записываем пользователя в БД бота вместе с ID от Dexpay
         await add_user(
             user_id=message.from_user.id,
             username=message.from_user.username,
-            email=email
+            email=email,
+            dexpay_internal_id=dexpay_id  # Передаем новый параметр в БД
         )
 
         # Очищаем состояние
         await state.clear()
 
+        # Удаляем сообщение "Проверяем данные..."
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+        # Отправляем новое сообщение с Reply-клавиатурой
         await message.answer(
             f"🎉 <b>Почта подтверждена!</b>\n\n"
             f"Регистрация завершена. Добро пожаловать!",
             reply_markup=start_keyboard()
         )
-        # добавь тут регистрацию юзера в dexpay
     else:
         # --- ОШИБКА: Код неверный ---
         await message.answer(
@@ -165,7 +204,7 @@ async def process_code(message: Message, state: FSMContext):
         )
 
 
-@router.message(F.text == "Обмен 💱")
+@router.message(F.text == "Операции 💱")
 async def exchange(message: Message, state: FSMContext):
     msg = await message.answer(f"""<b>Курс <u>EscoEX</u>:</b>""", reply_markup=get_buy_sell_keyboard())
 
@@ -180,17 +219,66 @@ async def exchange(message: Message, state: FSMContext):
 
     # email = "test@example.com"
     customer_uuid = "custom-client-id-001"
-    await message.answer(f"{await dexpay.create_kyc_link(dexpay_user_id='d042c90d62')}")
+    # await message.answer(f"{await dexpay.create_kyc_link(dexpay_user_id='d042c90d62')}")
 
 
 @router.message(F.text == "История 🗄")
-async def history(message: Message, state: FSMContext):
-    await message.answer("У Вас пока нет активных или успешных обменов.")
+async def history(message: types.Message, state: FSMContext):
+    await message.answer(
+        "Выберите тип операций для просмотра истории:",
+        reply_markup=history_type_keyboard()
+    )
+
+
+@router.callback_query(F.data.in_(["history_buy", "history_sell"]))
+async def show_history(callback: types.CallbackQuery):
+    # Определяем тип из callback_data
+    order_type = "buy" if callback.data == "history_buy" else "sell"
+    type_text = "покупке" if order_type == "buy" else "продаже"
+
+    # Делаем запрос в базу
+    orders = await get_user_orders(callback.from_user.id, order_type)
+
+    if not orders:
+        await callback.message.edit_text(
+            f"📭 У Вас пока нет истории операций по <b>{type_text}</b>.",
+            parse_mode="HTML",
+            reply_markup=history_type_keyboard()
+        )
+        return
+
+    # Если заявки есть, формируем красивый список
+    text = f"<b>Ваша история операций по {type_text}:</b>\n\n"
+
+    for order in orders:
+        # Форматируем дату (учитывая, что order.created_at - это datetime)
+        date_str = order.created_at.strftime("%d.%m.%Y %H:%M")
+
+        text += (
+            f"🔹 <b>Заявка #{order.id}</b> | {date_str}\n"
+            f"Сумма: {order.amount_usdt} USDT (≈ {order.amount_rub} ₽)\n"
+            f"Статус: <i>{order.status}</i>\n"
+            f"-----------------------\n"
+        )
+
+    # Редактируем сообщение, оставляя клавиатуру для переключения
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=history_type_keyboard()
+    )
 
 
 @router.message(F.text == "Поддержка 📧")
 async def support(message: Message, state: FSMContext):
-    await message.answer("Возникли проблемы или просто есть вопросы? Пишите - @")
+    await message.answer(
+        "🛠 <b>Служба поддержки EscoEX</b>\n\n"
+        "Возникли проблемы или есть вопросы по операции? Свяжитесь с нами:\n\n"
+        f"💬 <b>Telegram:</b> @{support_link}\n"  # Укажи реальный юзернейм
+        "📧 <b>Email:</b> support@escotrust.ru\n\n"  # Обязательно почта на вашем домене
+        "<i>Мы отвечаем ежедневно с 10:00 до 22:00 (МСК).</i>",
+        parse_mode="HTML"
+    )
 
 
 # Обработчик нажатия на кнопку "Отмена" (callback_data="cancel_payment")

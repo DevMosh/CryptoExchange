@@ -6,6 +6,9 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
+from data.config import dexpay, privacy, terms
+from database.requests.get import get_user
+from database.requests.set import set_user_kyc_status
 # Импорты (оставляем как были)
 from keyboards.inline import confirm_buy, get_payment_rules_keyboard
 
@@ -93,7 +96,65 @@ async def handle_buy_query(inline_query: types.InlineQuery):
 
 @router.message(F.text.startswith("🛒 Создать заявку на покупку:"))
 async def process_instant_buy_from_inline(message: types.Message, state: FSMContext):
-    # 1. Парсим сумму
+    user_id = message.from_user.id
+
+    user = await get_user(user_id)
+    kyc_response = await dexpay.create_kyc_link(user.dexpay_internal_id)
+    new_kyc_status = kyc_response.get("status")
+
+    # Записываем новый статус в нашу базу данных
+    if new_kyc_status:
+        await set_user_kyc_status(user_id, new_kyc_status)
+
+    user = await get_user(user_id)
+
+    if not user or user.kyc_status != "APPROVED":
+        # Удаляем техническое сообщение пользователя
+        try:
+            await message.delete()
+        except TelegramBadRequest:
+            pass
+
+        # Запрашиваем ссылку на KYC через Dexpay API
+        try:
+            # Передаем внутренний ID пользователя в Dexpay
+            kyc_response = await dexpay.create_kyc_link(user.dexpay_internal_id)
+
+            # Достаем ссылку и статус из ответа Dexpay
+            kyc_url = kyc_response.get("link")
+            new_kyc_status = kyc_response.get("status")  # Тут будет "PROCESS"
+
+            if not kyc_url:
+                raise ValueError("Ссылка не найдена в ответе API")
+
+            # Записываем новый статус в нашу базу данных
+            if new_kyc_status:
+                await set_user_kyc_status(user_id, new_kyc_status)
+
+        except Exception as e:
+            print(f"🔥 Ошибка генерации KYC ссылки: {repr(e)}")
+            await message.answer("⚠️ Ошибка получения ссылки на верификацию. Попробуйте позже.")
+            return
+
+        # Создаем инлайн клавиатуру с URL-кнопкой
+        kyc_builder = InlineKeyboardBuilder()
+        kyc_builder.row(
+            types.InlineKeyboardButton(text="🛡 Пройти верификацию", url=kyc_url)
+        )
+
+        # Выдаем сообщение с кнопкой
+        await message.answer(
+            "⚠️ <b>Внимание:</b> У вас не пройдена KYC верификация!\n\n"
+            "Для совершения операции необходимо подтвердить свою личность. "
+            "Пожалуйста, пройдите верификацию по кнопке ниже.\n\n"
+            "⚡ Покупка usdt станет доступна через 5 минут после прохождения верификации.",
+            parse_mode="HTML",
+            reply_markup=kyc_builder.as_markup()
+        )
+        return
+    # -----------------------------------
+
+    # 2. Парсим сумму
     try:
         text_amount = message.text.split(":")[1].replace("USDT", "").strip()
         usdt = float(text_amount)
@@ -101,31 +162,29 @@ async def process_instant_buy_from_inline(message: types.Message, state: FSMCont
         await message.answer("⚠️ Ошибка обработки суммы. Попробуйте снова.")
         return
 
-    # 2. Удаляем сообщение юзера
+    # 3. Удаляем сообщение юзера
     try:
         await message.delete()
     except TelegramBadRequest:
         pass
 
-    # 3. Проверка лимита
+    # 4. Проверка лимита
     if usdt < 40.0:
-        msg = await message.answer("⚠️ Сумма обмена должна быть не менее 40$")
+        msg = await message.answer("⚠️ Сумма операции должна быть не менее 40$")
         await asyncio.sleep(3)
         try:
             await msg.delete()
-        except:
+        except TelegramBadRequest:
             pass
         return
 
     await state.update_data(usdt_amount=usdt)
 
-    # --- НОВОЕ: Получаем курс и считаем рубли ---
+    # 5. Получаем курс и считаем рубли
     rates = await get_exchange_rates()
-    # Считаем сумму (округляем до целого через int или .0f)
     rub_approx = int(usdt * rates['покупка'])
-    # --------------------------------------------
 
-    last_address = "TPAgKfYzRdK83Qocc4gXvEVu4jPKfeuer5"  # Заглушка
+    last_address = "TPAgKfYzRdK83Qocc4gXvEVu4jPKfeuer5"  # Заглушка (в будущем брать из БД)
 
     builder = InlineKeyboardBuilder()
     if last_address:
@@ -134,11 +193,10 @@ async def process_instant_buy_from_inline(message: types.Message, state: FSMCont
             callback_data="use_last_address"
         ))
 
-    # --- НОВОЕ: Обновленный текст сообщения ---
     msg_text = (
         f"✅ Выбрана сумма: <b>{usdt} USDT</b> ( ≈{rub_approx}₽)\n\n"
         "Введите адрес вашего USDT (TRC20) кошелька "
-    ).replace(',', ' ')  # (Опционально) Делаем пробелы в тысячах (9 600 вместо 9,600)
+    ).replace(',', ' ')
 
     if last_address:
         msg_text += "или выберите последний использованный:"
@@ -232,13 +290,13 @@ async def finalize_order_creation(message_obj: types.Message, state: FSMContext,
 
 @router.callback_query(F.data == "confirm_buy_usdt")
 async def confirm_buy_usdt(query: types.CallbackQuery, state: FSMContext):
-    await query.message.edit_text("""
+    await query.message.edit_text(f"""
 <b>🔴 ВАЖНО: Правила безопасности</b>
 
 Перед оплатой внимательно прочитайте. Эти правила защищают ваш платеж и аккаунт.
 
 <b>💳 Оплата только с вашей карты</b>
-Платежи от третьих лиц (друзей, родственников, покупателей) <b>запрещены</b>. При несовпадении ФИО система автоматически вернет деньги отправителю с удержанием комиссии <b>10%</b>. Криптовалюта выдана не будет.
+Платежи от третьих лиц (друзей, родственников, покупателей) <b>запрещены</b>. При несовпадении ФИО система автоматически вернет деньги отправителю с удержанием комиссии <b>10%</b>. Цифровые активы начислены не будут.
 
 <b>🚫 Запрет на дробление платежей</b>
 Не пытайтесь разбить сумму на части (переводы до 15 000₽). Банки отслеживают суточные лимиты. За серию мелких переводов вам могут заблокировать банковский аккаунт по <b>115-ФЗ</b>. Платите всю сумму <b>одной транзакцией</b>.
@@ -246,7 +304,7 @@ async def confirm_buy_usdt(query: types.CallbackQuery, state: FSMContext):
 <b>🔒 Ссылка привязана к устройству</b>
 Не передавайте эту страницу другим людям. Ссылка защищена <b>Fingerprint</b>. При попытке открытия на другом устройстве транзакция будет помечена как «подозрительная» и заблокирована.
 
-✅ <i>Нажимая кнопку ниже, я подтверждаю, что буду оплачивать со своей карты, и принимаю условия <a href="https://telegra.ph/PUBLICHNAYA-OFERTA-02-21-7">Публичной оферты и <a href="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-02-21-89">Политики конфиденциальности</a>.</i>""",
+✅ <i>Нажимая кнопку ниже, я подтверждаю, что буду оплачивать со своей карты, и принимаю условия <a href="{terms}">Публичной оферты и <a href="{privacy}">Политики конфиденциальности</a>.</i>""",
 reply_markup=get_payment_rules_keyboard())
 
 

@@ -2,7 +2,7 @@ import aiohttp
 import logging
 from typing import Optional
 
-# Настройка логгера
+# Настройка логгераcl
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
