@@ -1,7 +1,7 @@
-from sqlalchemy import update
+from sqlalchemy import update, select
 
 from database.connect import async_session
-from database.models import User
+from database.models import User, Order
 
 
 async def set_user_active_status(user_id: int, status: bool = False):
@@ -40,3 +40,19 @@ async def set_user_kyc_status(user_id: int, status: str):
             await session.commit()
             return True
         return False
+
+
+async def update_order_status(dexpay_order_id: str, new_status: str, tx_hash: str = None):
+    """Обновляет статус заявки и сохраняет хэш транзакции (при выводе)"""
+    async with async_session() as session:
+        query = select(Order).where(Order.dexpay_order_id == dexpay_order_id)
+        result = await session.execute(query)
+        order = result.scalar()
+
+        if order:
+            order.status = new_status
+            if tx_hash:
+                order.tx_hash = tx_hash
+            await session.commit()
+            return order
+        return None

@@ -68,3 +68,11 @@ async def get_user_orders(user_id: int, order_type: str):
         )
         result = await session.execute(query)
         return result.scalars().all()
+
+
+async def get_user_by_dexpay_id(dexpay_internal_id: str):
+    """Ищет пользователя по его ID в системе Dexpay"""
+    async with async_session() as session:
+        query = select(User).where(User.dexpay_internal_id == dexpay_internal_id)
+        result = await session.execute(query)
+        return result.scalar()
